@@ -237,10 +237,146 @@ static void SkyInstall(void) {
     SkyLog(@"hooks installed");
 }
 
+
+// ---------------- 原生面板换肤（SkyCam 是原生 UIKit，不走 WebView） ----------------
+// 依据真实视图树（VCamOverlayWindow, level 2120）：
+//   卡片底 #E1EDF9 / 方块白 #FFFFFF / 选中绿 #72D689 / 橙色 #F49919 / 面板 #1377EF@5%
+//   标题 "SkyCam"、分隔 UILabel "SKY LAB · 增强项"、7 个开关 UIButton
+// 规则：浅底→深卡，绿/橙→金，深字→沙金，标题→亮金；文案替换为天乐口径。
+
+static UIColor* SkyRGB(CGFloat r, CGFloat g, CGFloat b, CGFloat a) {
+    return [UIColor colorWithRed:r green:g blue:b alpha:a];
+}
+static UIColor* SkyGoldC(void)  { return SkyRGB(0.839, 0.690, 0.361, 1.0); }   // D6B05C
+static UIColor* SkyCardC(void)  { return SkyRGB(0.102, 0.090, 0.071, 1.0); }   // 1A1712
+static UIColor* SkyBgC(void)    { return SkyRGB(0.071, 0.063, 0.047, 1.0); }   // 12100C
+static UIColor* SkyTextC(void)  { return SkyRGB(0.788, 0.725, 0.561, 1.0); }   // C9B98F
+static UIColor* SkyTitleC(void) { return SkyRGB(0.910, 0.851, 0.710, 1.0); }   // E8D9B5
+static UIColor* SkyLineC(void)  { return SkyRGB(0.839, 0.690, 0.361, 0.35); }
+
+static BOOL SkyNear(UIColor* c, CGFloat r, CGFloat g, CGFloat b, CGFloat tol) {
+    if (!c) return NO;
+    CGFloat rr = 0, gg = 0, bb = 0, aa = 0;
+    if (![c getRed:&rr green:&gg blue:&bb alpha:&aa]) return NO;
+    return fabs(rr - r) < tol && fabs(gg - g) < tol && fabs(bb - b) < tol;
+}
+
+static BOOL SkyIsGold(CGFloat r, CGFloat g, CGFloat b) {
+    return fabs(r - 0.839) < 0.08 && fabs(g - 0.690) < 0.08 && fabs(b - 0.361) < 0.08;
+}
+
+// 第一遍：背景色映射（先改底，后面按底色决定文字色）
+static void SkyWalkBg(UIView* v) {
+    UIColor* bg = v.backgroundColor;
+    if (bg) {
+        CGFloat r = 0, g = 0, b = 0, a = 0;
+        if ([bg getRed:&r green:&g blue:&b alpha:&a]) {
+            if (a <= 0.08 && r < 0.15 && g > 0.35 && b > 0.80) {
+                v.backgroundColor = SkyRGB(0.09, 0.08, 0.06, 1.0);       // #1377EF@5% 面板 → 深底
+            } else if (a > 0.05 && SkyNear(bg, 0.882, 0.929, 0.976, 0.05)) {
+                v.backgroundColor = SkyBgC();                            // #E1EDF9 卡片 → #12100C
+            } else if (a > 0.05 && (SkyNear(bg, 0.447, 0.839, 0.537, 0.08) ||
+                                    SkyNear(bg, 0.957, 0.600, 0.098, 0.08))) {
+                v.backgroundColor = SkyGoldC();                          // 绿 / 橙 → 金
+                v.layer.cornerRadius = 8;
+                v.clipsToBounds = YES;
+            } else if (a > 0.05 && SkyNear(bg, 1.0, 1.0, 1.0, 0.04)) {
+                v.backgroundColor = SkyCardC();                          // 白方块 → 深卡
+                v.layer.cornerRadius = 8;
+                v.layer.borderWidth = 1.0;
+                v.layer.borderColor = SkyLineC().CGColor;
+            }
+        }
+    }
+    if (v.frame.size.height > 0 && v.frame.size.height <= 2.5 && v.frame.size.width >= 100) {
+        v.backgroundColor = SkyLineC();                                  // 分隔线 → 金色细线
+    }
+    for (UIView* s in v.subviews) SkyWalkBg(s);
+}
+
+static NSString* SkyMapText(NSString* t) {
+    if (!t.length) return t;
+    if ([t isEqualToString:@"SkyCam"]) return @"天乐系统";
+    if ([t rangeOfString:@"SKY LAB"].location != NSNotFound) return @"直播去重效果";
+    return t;
+}
+
+static BOOL SkyViewIsGold(UIView* v) {
+    UIColor* c = v.backgroundColor;
+    if (!c) return NO;
+    CGFloat r = 0, g = 0, b = 0, a = 0;
+    return [c getRed:&r green:&g blue:&b alpha:&a] && a > 0.5 && SkyIsGold(r, g, b);
+}
+
+static BOOL SkyHasGoldChild(UIView* v, int depth) {
+    if (depth <= 0) return NO;
+    for (UIView* s in v.subviews) {
+        if (SkyViewIsGold(s)) return YES;
+        if (SkyHasGoldChild(s, depth - 1)) return YES;
+    }
+    return NO;
+}
+
+// 文字是否压在金色底上：向上找 3 层，同时看每层的子树（方块底色与文字是兄弟节点）
+static BOOL SkyGoldBehind(UIView* v) {
+    UIView* p = v;
+    int up = 0;
+    while (p && up < 3) {
+        if (SkyViewIsGold(p)) return YES;
+        if (SkyHasGoldChild(p, 2)) return YES;
+        p = p.superview;
+        up++;
+    }
+    return NO;
+}
+
+// 第二遍：文字色 + 文案替换
+static void SkyWalkText(UIView* v) {
+    BOOL onGold = SkyGoldBehind(v);
+    if ([v isKindOfClass:[UILabel class]]) {
+        UILabel* l = (UILabel*)v;
+        l.text = SkyMapText(l.text);
+        if (l.text.length) {
+            BOOL titleLike = (l.font.pointSize >= 15.0 || [l.text isEqualToString:@"天乐系统"]);
+            l.textColor = onGold ? SkyRGB(0.071, 0.063, 0.047, 1.0) : (titleLike ? SkyTitleC() : SkyTextC());
+        }
+    } else if ([v isKindOfClass:[UIButton class]]) {
+        UIButton* btn = (UIButton*)v;
+        NSString* t = [btn titleForState:UIControlStateNormal];
+        if (t.length) [btn setTitle:SkyMapText(t) forState:UIControlStateNormal];
+        UIColor* col = onGold ? SkyRGB(0.071, 0.063, 0.047, 1.0) : SkyTextC();
+        [btn setTitleColor:col forState:UIControlStateNormal];
+        [btn setTitleColor:col forState:UIControlStateHighlighted];
+        [btn setTitleColor:col forState:UIControlStateSelected];
+    }
+    for (UIView* s in v.subviews) SkyWalkText(s);
+}
+
+static void SkyApplyNative(void) {
+    NSArray<UIWindow*>* wins = [UIApplication sharedApplication].windows;
+    for (UIWindow* w in wins) {
+        NSString* cn = NSStringFromClass(w.class);
+        if ([cn rangeOfString:@"VCamOverlay"].location == NSNotFound) continue;
+        if (w.hidden || w.alpha < 0.05) continue;
+        SkyWalkBg(w);
+        SkyWalkText(w);
+    }
+}
+
+static void SkyStartNative(void) {
+    static BOOL started = NO;
+    if (started) return;
+    started = YES;
+    [NSTimer scheduledTimerWithTimeInterval:0.8 repeats:YES block:^(NSTimer* t) {
+        @try { SkyApplyNative(); } @catch (NSException* e) { SkyLog(@"native skin exception %@", e); }
+    }];
+    SkyLog(@"native skin timer started");
+}
+
 __attribute__((constructor))
 static void skyskin_init(void) {
     SkyLog(@"init");
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        @try { SkyInstall(); } @catch (NSException* e) { SkyLog(@"install exception %@", e); }
+        @try { SkyInstall(); SkyStartNative(); } @catch (NSException* e) { SkyLog(@"install exception %@", e); }
     });
 }
