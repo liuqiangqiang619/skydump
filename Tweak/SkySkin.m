@@ -367,7 +367,7 @@ static void SkyStartNative(void) {
     static BOOL started = NO;
     if (started) return;
     started = YES;
-    [NSTimer scheduledTimerWithTimeInterval:0.8 repeats:YES block:^(NSTimer* t) {
+    [NSTimer scheduledTimerWithTimeInterval:1.5 repeats:YES block:^(NSTimer* t) {
         @try { SkyApplyNative(); } @catch (NSException* e) { SkyLog(@"native skin exception %@", e); }
     }];
     SkyLog(@"native skin timer started");
@@ -449,10 +449,55 @@ static void SkyInstallColorFilters(void) {
     SkyLog(@"color filters installed");
 }
 
+
+// ---- CALayer 层颜色拦截（开关盒子等可能是直接画在 layer 上） ----
+static void (*orig_layerSetBg)(id, SEL, CGColorRef) = NULL;
+static void sky_layerSetBackgroundColor(id self, SEL _cmd, CGColorRef color) {
+    @try {
+        if (color) {
+            UIView* owner = nil;
+            @try { id d = ((CALayer*)self).delegate; if ([d isKindOfClass:[UIView class]]) owner = d; } @catch (NSException* e) {}
+            if (owner && SkyInOverlay(owner)) {
+                UIColor* ui = [UIColor colorWithCGColor:color];
+                UIColor* m = SkyMapBgColor(ui);
+                if (m) { orig_layerSetBg(self, _cmd, m.CGColor); return; }
+            }
+        }
+    } @catch (NSException* e) {}
+    orig_layerSetBg(self, _cmd, color);
+}
+
+static void SkyInstallLayerFilter(void) {
+    Method m = class_getInstanceMethod([CALayer class], @selector(setBackgroundColor:));
+    if (m) {
+        orig_layerSetBg = (void*)method_getImplementation(m);
+        method_setImplementation(m, (IMP)sky_layerSetBackgroundColor);
+        SkyLog(@"layer color filter installed");
+    }
+}
+
+// 新加进来的子视图立刻处理，不等定时器（避免"先原色后变暗"的跳变）
+static void (*orig_didAddSubview)(id, SEL, UIView*) = NULL;
+static void sky_didAddSubview(id self, SEL _cmd, UIView* sub) {
+    orig_didAddSubview(self, _cmd, sub);
+    @try {
+        if (sub && SkyInOverlay((UIView*)self)) { SkyWalkBg(sub); SkyWalkText(sub); }
+    } @catch (NSException* e) {}
+}
+
+static void SkyInstallAddSubFilter(void) {
+    Method m = class_getInstanceMethod([UIView class], @selector(didAddSubview:));
+    if (m) {
+        orig_didAddSubview = (void*)method_getImplementation(m);
+        method_setImplementation(m, (IMP)sky_didAddSubview);
+        SkyLog(@"didAddSubview filter installed");
+    }
+}
+
 __attribute__((constructor))
 static void skyskin_init(void) {
     SkyLog(@"init");
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        @try { SkyInstall(); SkyInstallColorFilters(); SkyStartNative(); } @catch (NSException* e) { SkyLog(@"install exception %@", e); }
+        @try { SkyInstall(); SkyInstallColorFilters(); SkyInstallLayerFilter(); SkyInstallAddSubFilter(); SkyStartNative(); } @catch (NSException* e) { SkyLog(@"install exception %@", e); }
     });
 }
