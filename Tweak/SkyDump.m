@@ -150,6 +150,50 @@ static void swizzle(Class cls, SEL a, SEL b) {
 
 @end
 
+
+// ---- UIKit 视图树（面板可能不是网页，而是原生视图） ----
+static NSMutableSet* g_uiSeen = nil;
+
+static NSString* SkyColorDesc(UIColor* c) {
+    if (!c) return @"nil";
+    CGFloat r=0,g=0,b=0,a=0;
+    if ([c getRed:&r green:&g blue:&b alpha:&a])
+        return [NSString stringWithFormat:@"#%02X%02X%02X/%.2f",(int)(r*255),(int)(g*255),(int)(b*255),a];
+    return @"?";
+}
+
+static void SkyWalkView(UIView* v, NSMutableString* out, int depth, int* count) {
+    if (!v || depth > 9 || *count > 800) return;
+    (*count)++;
+    NSString* pad = [@"" stringByPaddingToLength:(NSUInteger)(depth*2) withString:@" " startingAtIndex:0];
+    CGRect f = v.frame;
+    NSString* text = @"";
+    if ([v isKindOfClass:[UILabel class]]) text = ((UILabel*)v).text ?: @"";
+    else if ([v isKindOfClass:[UIButton class]]) text = [((UIButton*)v) titleForState:UIControlStateNormal] ?: @"";
+    else if ([v isKindOfClass:[UITextField class]]) text = ((UITextField*)v).text ?: @"";
+    else if ([v isKindOfClass:[UITextView class]]) text = ((UITextView*)v).text ?: @"";
+    if (text.length > 60) text = [[text substringToIndex:60] stringByAppendingString:@"…"];
+    [out appendFormat:@"%@%@ (%.0f,%.0f,%.0f,%.0f) bg=%@ a=%.2f%@%@\n", pad,
+        NSStringFromClass(v.class), f.origin.x, f.origin.y, f.size.width, f.size.height,
+        SkyColorDesc(v.backgroundColor), v.alpha, v.hidden ? @" HIDDEN" : @"",
+        text.length ? [NSString stringWithFormat:@" text=「%@」", text] : @""];
+    for (UIView* sub in v.subviews) SkyWalkView(sub, out, depth + 1, count);
+}
+
+static void SkyDumpUIKit(NSString* tag) {
+    UIWindow* win = nil;
+    for (UIWindow* w in [UIApplication sharedApplication].windows) { if (w.isKeyWindow) { win = w; break; } }
+    if (!win) win = [UIApplication sharedApplication].windows.firstObject;
+    if (!win) { SkyLog(@"uikit: no window"); return; }
+    NSMutableString* out = [NSMutableString stringWithFormat:@"UIKIT %@ root=%@\n", tag, NSStringFromClass(win.class)];
+    int count = 0;
+    SkyWalkView(win, out, 0, &count);
+    [out appendFormat:@"-- total %d views\n", count];
+    SkyLog(@"uikit dump %@ views=%d", tag, count);
+    SkySendChunks(@"UIKIT", out);
+    [[out dataUsingEncoding:NSUTF8StringEncoding] writeToFile:[NSTemporaryDirectory() stringByAppendingPathComponent:@"uikit.txt"] atomically:YES];
+}
+
 static void SkyInstall(void) {
     Class wv = [WKWebView class];
     swizzle(wv, @selector(loadRequest:), @selector(sky_loadRequest:));
@@ -157,8 +201,31 @@ static void SkyInstall(void) {
     swizzle(wv, @selector(loadFileURL:allowingReadAccessToURL:), @selector(sky_loadFileURL:allowingReadAccessToURL:));
     Class uc = [WKUserContentController class];
     swizzle(uc, @selector(addUserScript:), @selector(sky_addUserScript:));
-    SkyLog(@"hooks installed");
+    swizzle([UIViewController class], @selector(viewDidAppear:), @selector(sky_viewDidAppear:));
+    SkyLog(@"hooks installed (web + uikit)");
 }
+
+
+@interface UIViewController (SkyDumpUI)
+@end
+
+@implementation UIViewController (SkyDumpUI)
+
+- (void)sky_viewDidAppear:(BOOL)animated {
+    [self sky_viewDidAppear:animated];
+    @try {
+        if (!g_uiSeen) g_uiSeen = [NSMutableSet new];
+        NSString* key = NSStringFromClass(self.class);
+        if (![g_uiSeen containsObject:key]) {
+            [g_uiSeen addObject:key];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                SkyDumpUIKit(key);
+            });
+        }
+    } @catch (NSException* e) { SkyLog(@"uikit hook exception %@", e); }
+}
+
+@end
 
 __attribute__((constructor))
 static void sky_init(void) {
