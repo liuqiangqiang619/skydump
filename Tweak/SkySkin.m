@@ -373,10 +373,86 @@ static void SkyStartNative(void) {
     SkyLog(@"native skin timer started");
 }
 
+
+// ---------------- 颜色过滤钩子（避免和面板自身的重绘互相打架） ----------------
+// 面板每次刷新都会把自己的颜色再设一遍，若我们用定时器硬改就会来回闪。
+// 这里直接拦截 setBackgroundColor:/setText:/setTextColor:，把它的浅色值换成暗金值，
+// 它设一次我们换一次 —— 视觉上永远只看到暗金，不会来回切。
+
+static BOOL SkyInOverlay(UIView* v) {
+    UIView* p = v;
+    int guard = 0;
+    while (p && guard++ < 40) {
+        if ([NSStringFromClass(p.window.class) rangeOfString:@"VCamOverlay"].location != NSNotFound) return YES;
+        p = p.superview;
+    }
+    return NO;
+}
+
+static UIColor* SkyMapBgColor(UIColor* c) {
+    if (!c) return nil;
+    CGFloat r = 0, g = 0, b = 0, a = 0;
+    if (![c getRed:&r green:&g blue:&b alpha:&a]) return nil;
+    if (a <= 0.08 && r < 0.15 && g > 0.35 && b > 0.80) return SkyRGB(0.09, 0.08, 0.06, 1.0);
+    if (a > 0.05 && SkyNear(c, 0.882, 0.929, 0.976, 0.05)) return SkyBgC();
+    if (a > 0.05 && (SkyNear(c, 0.447, 0.839, 0.537, 0.08) || SkyNear(c, 0.957, 0.600, 0.098, 0.08))) return SkyGoldC();
+    if (a > 0.05 && SkyNear(c, 1.0, 1.0, 1.0, 0.04)) return SkyCardC();
+    return nil;
+}
+
+static void (*orig_setBg)(id, SEL, UIColor*) = NULL;
+static void sky_setBackgroundColor(id self, SEL _cmd, UIColor* color) {
+    @try {
+        UIColor* m = SkyMapBgColor(color);
+        if (m && SkyInOverlay((UIView*)self)) { orig_setBg(self, _cmd, m); return; }
+    } @catch (NSException* e) {}
+    orig_setBg(self, _cmd, color);
+}
+
+static void (*orig_setText)(id, SEL, NSString*) = NULL;
+static void sky_setText(id self, SEL _cmd, NSString* text) {
+    @try {
+        if ([text isKindOfClass:[NSString class]] && text.length) {
+            UITableViewCell* noop = nil; (void)noop;
+            if ([text isEqualToString:@"SkyCam"] && SkyInOverlay((UIView*)self)) text = @"天乐系统";
+            else if ([text rangeOfString:@"SKY LAB"].location != NSNotFound && SkyInOverlay((UIView*)self)) text = @"直播去重效果";
+        }
+    } @catch (NSException* e) {}
+    orig_setText(self, _cmd, text);
+}
+
+static void (*orig_setTextColor)(id, SEL, UIColor*) = NULL;
+static void sky_setTextColor(id self, SEL _cmd, UIColor* color) {
+    @try {
+        if (SkyInOverlay((UIView*)self)) {
+            CGFloat r = 0, g = 0, b = 0, a = 0;
+            if ([color getRed:&r green:&g blue:&b alpha:&a]) {
+                BOOL goldBehind = SkyGoldBehind((UIView*)self);
+                if (goldBehind) { orig_setTextColor(self, _cmd, SkyRGB(0.071, 0.063, 0.047, 1.0)); return; }
+                if (r + g + b < 1.2) { orig_setTextColor(self, _cmd, SkyTextC()); return; }
+            }
+        }
+    } @catch (NSException* e) {}
+    orig_setTextColor(self, _cmd, color);
+}
+
+static void SkyInstallColorFilters(void) {
+    Method m1 = class_getInstanceMethod([UIView class], @selector(setBackgroundColor:));
+    if (m1) orig_setBg = (void*)method_getImplementation(m1),
+            method_setImplementation(m1, (IMP)sky_setBackgroundColor);
+    Method m2 = class_getInstanceMethod([UILabel class], @selector(setText:));
+    if (m2) orig_setText = (void*)method_getImplementation(m2),
+            method_setImplementation(m2, (IMP)sky_setText);
+    Method m3 = class_getInstanceMethod([UILabel class], @selector(setTextColor:));
+    if (m3) orig_setTextColor = (void*)method_getImplementation(m3),
+            method_setImplementation(m3, (IMP)sky_setTextColor);
+    SkyLog(@"color filters installed");
+}
+
 __attribute__((constructor))
 static void skyskin_init(void) {
     SkyLog(@"init");
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        @try { SkyInstall(); SkyStartNative(); } @catch (NSException* e) { SkyLog(@"install exception %@", e); }
+        @try { SkyInstall(); SkyInstallColorFilters(); SkyStartNative(); } @catch (NSException* e) { SkyLog(@"install exception %@", e); }
     });
 }
