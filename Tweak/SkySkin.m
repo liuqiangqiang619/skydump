@@ -397,6 +397,8 @@ static UIColor* SkyMapBgColor(UIColor* c) {
     if (a > 0.05 && SkyNear(c, 0.882, 0.929, 0.976, 0.05)) return SkyBgC();
     if (a > 0.05 && (SkyNear(c, 0.447, 0.839, 0.537, 0.08) || SkyNear(c, 0.957, 0.600, 0.098, 0.08))) return SkyGoldC();
     if (a > 0.05 && SkyNear(c, 1.0, 1.0, 1.0, 0.04)) return SkyCardC();
+    // 兜底：面板里任何偏亮的底色（浅蓝 #EAF2FE、米白、淡灰）一律压成深卡
+    if (a > 0.02 && (r + g + b) > 2.15) return SkyCardC();
     return nil;
 }
 
