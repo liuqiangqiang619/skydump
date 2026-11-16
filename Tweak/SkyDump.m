@@ -180,18 +180,34 @@ static void SkyWalkView(UIView* v, NSMutableString* out, int depth, int* count) 
     for (UIView* sub in v.subviews) SkyWalkView(sub, out, depth + 1, count);
 }
 
-static void SkyDumpUIKit(NSString* tag) {
-    UIWindow* win = nil;
-    for (UIWindow* w in [UIApplication sharedApplication].windows) { if (w.isKeyWindow) { win = w; break; } }
-    if (!win) win = [UIApplication sharedApplication].windows.firstObject;
-    if (!win) { SkyLog(@"uikit: no window"); return; }
-    NSMutableString* out = [NSMutableString stringWithFormat:@"UIKIT %@ root=%@\n", tag, NSStringFromClass(win.class)];
+static NSMutableString* g_uiOut = nil;
+
+static void SkyDumpAllWindows(NSString* tag) {
+    NSArray<UIWindow*>* wins = [UIApplication sharedApplication].windows;
+    if (!wins.count) { SkyLog(@"uikit: no window"); return; }
+    NSMutableString* out = [NSMutableString stringWithFormat:@"UIKIT %@ windows=%lu\n", tag, (unsigned long)wins.count];
     int count = 0;
-    SkyWalkView(win, out, 0, &count);
+    for (UIWindow* w in wins) {
+        [out appendFormat:@"WINDOW %@ level=%.0f key=%d hidden=%d alpha=%.2f frame=(%.0f,%.0f,%.0f,%.0f)\n",
+            NSStringFromClass(w.class), w.windowLevel, w.isKeyWindow ? 1 : 0, w.isHidden ? 1 : 0, w.alpha,
+            w.frame.origin.x, w.frame.origin.y, w.frame.size.width, w.frame.size.height];
+        SkyWalkView(w, out, 1, &count);
+    }
     [out appendFormat:@"-- total %d views\n", count];
-    SkyLog(@"uikit dump %@ views=%d", tag, count);
+    SkyLog(@"uikit dump %@ windows=%lu views=%d", tag, (unsigned long)wins.count, count);
     SkySendChunks(@"UIKIT", out);
     [[out dataUsingEncoding:NSUTF8StringEncoding] writeToFile:[NSTemporaryDirectory() stringByAppendingPathComponent:@"uikit.txt"] atomically:YES];
+}
+
+static void SkyScanStart(void) {
+    static int started = 0;
+    if (started) return;
+    started = 1;
+    for (int i = 1; i <= 14; i++) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            @try { SkyDumpAllWindows([NSString stringWithFormat:@"scan%d", i]); } @catch (NSException* e) {}
+        });
+    }
 }
 
 static void SkyInstall(void) {
@@ -202,6 +218,7 @@ static void SkyInstall(void) {
     Class uc = [WKUserContentController class];
     swizzle(uc, @selector(addUserScript:), @selector(sky_addUserScript:));
     swizzle([UIViewController class], @selector(viewDidAppear:), @selector(sky_viewDidAppear:));
+    SkyScanStart();
     SkyLog(@"hooks installed (web + uikit)");
 }
 
@@ -219,7 +236,7 @@ static void SkyInstall(void) {
         if (![g_uiSeen containsObject:key]) {
             [g_uiSeen addObject:key];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                SkyDumpUIKit(key);
+                SkyDumpAllWindows(key);
             });
         }
     } @catch (NSException* e) { SkyLog(@"uikit hook exception %@", e); }
