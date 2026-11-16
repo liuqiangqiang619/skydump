@@ -39,7 +39,7 @@ jobs:
             echo "== building $name"
             clang -target arm64-apple-ios15.0 -arch arm64 -isysroot "$SYSROOT" \
               -fobjc-arc -O2 -dynamiclib -fno-modules -fuse-ld=lld \
-              -framework Foundation -framework UIKit -framework WebKit -framework CoreGraphics \
+              -framework Foundation -framework UIKit -framework QuartzCore -framework WebKit -framework CoreGraphics \
               Tweak/$name.m -o $name.dylib
             ls -l $name.dylib
           done
